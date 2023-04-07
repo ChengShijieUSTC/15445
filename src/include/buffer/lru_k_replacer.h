@@ -17,11 +17,15 @@
 #include <mutex>  // NOLINT
 #include <unordered_map>
 #include <vector>
+#include <algorithm>
+#include <iostream>
 
 #include "common/config.h"
 #include "common/macros.h"
 
 namespace bustub {
+
+using timestamp_t = std::list<size_t>;//记录单个页时间戳的列表
 
 /**
  * LRUKReplacer implements the LRU-k replacement policy.
@@ -71,6 +75,8 @@ class LRUKReplacer {
    * @return true if a frame is evicted successfully, false if no frames can be evicted.
    */
   auto Evict(frame_id_t *frame_id) -> bool;
+
+  auto EvictInstance(frame_id_t *frame_id) -> bool;
 
   /**
    * TODO(P1): Add implementation
@@ -132,14 +138,46 @@ class LRUKReplacer {
    */
   auto Size() -> size_t;
 
+  void Print_mem(){
+    std::cout << "new_frame_:" << std::endl;
+    for (auto it = new_frame_.begin(); it != new_frame_.end(); it++){
+      std::cout << *it << "(" << frame_k_[(*it)] << std::endl;
+    }
+    std::cout << "cache_frame_:" << std::endl;
+    for (auto it = cache_frame_.begin(); it != cache_frame_.end(); it++){
+      std::cout << (*it).first << "(" << frame_k_[(*it).first] << std::endl;
+    }
+    std::cout<< "curr_size_:" << std::endl;
+    std::cout<< curr_size_ << std::endl;
+    std::cout<< "replacer_size_:" << std::endl;
+    std::cout<< replacer_size_ << std::endl;
+  }
+
  private:
   // TODO(student): implement me! You can replace these member variables as you like.
   // Remove maybe_unused if you start using them.
-  [[maybe_unused]] size_t current_timestamp_{0};
-  [[maybe_unused]] size_t curr_size_{0};
-  [[maybe_unused]] size_t replacer_size_;
-  [[maybe_unused]] size_t k_;
+  // 当前时间戳，每次recode后+1
+  size_t current_timestamp_{0};
+  // 当前存放的可驱逐页面数量
+  size_t curr_size_{0};
+  // 最大可驱逐页面数量。初始为主存最多可存页面数
+  size_t replacer_size_;
+  // lru-k的k
+  size_t k_;
+  // latch
   std::mutex latch_;
+  // 记录每个frame的 timestamp 列表(只维护k个，这样.begin()就可以直接获取倒数第k次)
+  std::unordered_map<frame_id_t, timestamp_t> frame_timestamp_;
+  // 记录每个frame的 evictable 
+  std::unordered_map<frame_id_t, bool> frame_evictable_;
+  // 记录每个frame的 访问次数
+  std::unordered_map<frame_id_t, size_t> frame_k_;
+  // 未满 k 次的 LRU （头插尾删）
+  std::list<frame_id_t> new_frame_;
+  std::unordered_map<frame_id_t, std::list<frame_id_t>::iterator> new_frame_umap_;
+  // 达到 k 次的 LRU -- pair(frame_id, last k-th timestamp)
+  std::list<std::pair<frame_id_t, size_t>> cache_frame_;
+  std::unordered_map<frame_id_t, std::list<std::pair<frame_id_t, size_t>>::iterator> cache_frame_umap_;
 };
 
 }  // namespace bustub
