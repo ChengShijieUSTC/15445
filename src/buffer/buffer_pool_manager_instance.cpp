@@ -31,9 +31,9 @@ BufferPoolManagerInstance::BufferPoolManagerInstance(size_t pool_size, DiskManag
   }
 
   // TODO(students): remove this line after you have implemented the buffer pool manager
-  throw NotImplementedException(
+  /* throw NotImplementedException(
       "BufferPoolManager is not implemented yet. If you have finished implementing BPM, please remove the throw "
-      "exception line in `buffer_pool_manager_instance.cpp`.");
+      "exception line in `buffer_pool_manager_instance.cpp`."); */
 }
 
 BufferPoolManagerInstance::~BufferPoolManagerInstance() {
@@ -42,17 +42,148 @@ BufferPoolManagerInstance::~BufferPoolManagerInstance() {
   delete replacer_;
 }
 
-auto BufferPoolManagerInstance::NewPgImp(page_id_t *page_id) -> Page * { return nullptr; }
+auto BufferPoolManagerInstance::NewPgImp(page_id_t *page_id) -> Page * { 
+  if(free_list_.size() == 0 && replacer_->Size() == 0) {
+    page_id = nullptr;
+    return nullptr; 
+  }
+  //Page* new_page = new Page();
+  auto new_page_id = AllocatePage();
+  //new_page->page_id_ = new_page_id;
+  frame_id_t new_frame_id;
+  if(free_list_.size() != 0) {
+    new_frame_id = free_list_.front();
+    free_list_.pop_front();
+  } else {
+    // replacer
+    replacer_->Evict(&new_frame_id);
+    // 若 dirty 写磁盘
+    //auto evict_page = pages_[new_frame_id];
+    if(pages_[new_frame_id].IsDirty() == true){
+      pages_[new_frame_id].is_dirty_ = false;
+      disk_manager_->WritePage(pages_[new_frame_id].GetPageId(), pages_[new_frame_id].GetData());
+    }
+    // 更新 hashtable
+    page_table_->Remove(new_page_id);
+  }
+  // 更新 hashtable
+  page_table_->Insert(new_page_id, new_frame_id);
+  // 更新 replacer
+  replacer_->RecordAccess(new_frame_id);
+  replacer_->SetEvictable(new_frame_id, false);
+  // 更新 buffer pool
+  pages_[new_frame_id].ResetMemory();
+  pages_[new_frame_id].page_id_ = new_page_id;
+  *page_id = new_page_id;
+  pages_[new_frame_id].pin_count_ = 1;
+  pages_[new_frame_id].is_dirty_ = false;
+  return &pages_[new_frame_id];
+}
 
-auto BufferPoolManagerInstance::FetchPgImp(page_id_t page_id) -> Page * { return nullptr; }
+auto BufferPoolManagerInstance::FetchPgImp(page_id_t page_id) -> Page * { 
+  frame_id_t target_frame_id;
+  if(page_table_->Find(page_id, target_frame_id) == true) {
+    return &pages_[target_frame_id];
+  }
+  if(free_list_.size() == 0 && replacer_->Size() == 0) {
+    return nullptr; 
+  }
+  //Page* new_page = new Page();
+  //new_page->page_id_ = page_id;
+  //disk_manager_->ReadPage(page_id, new_page->GetData());
 
-auto BufferPoolManagerInstance::UnpinPgImp(page_id_t page_id, bool is_dirty) -> bool { return false; }
+  // 同上（NewPgImp）
+  frame_id_t new_frame_id;
+  if(free_list_.size() != 0) {
+    new_frame_id = free_list_.front();
+    free_list_.pop_front();
+  } else {
+    // replacer
+    replacer_->Evict(&new_frame_id);
+    // 若 dirty 写磁盘
+    //auto evict_page = pages_[new_frame_id];
+    if(pages_[new_frame_id].IsDirty() == true){
+      pages_[new_frame_id].is_dirty_ = false;
+      disk_manager_->WritePage(pages_[new_frame_id].GetPageId(), pages_[new_frame_id].GetData());
+    }
+    // 更新 hashtable
+    page_table_->Remove(page_id);
+  }
+  // 更新 hashtable
+  page_table_->Insert(page_id, new_frame_id);
+  // 更新 replacer
+  replacer_->RecordAccess(new_frame_id);
+  replacer_->SetEvictable(new_frame_id, false);
+  // 更新 buffer pool
+  disk_manager_->ReadPage(page_id, pages_[new_frame_id].GetData());
+  pages_[new_frame_id].page_id_ = page_id;
+  pages_[new_frame_id].pin_count_ = 1;
+  pages_[new_frame_id].is_dirty_ = false;
+  return &pages_[new_frame_id];
+}
 
-auto BufferPoolManagerInstance::FlushPgImp(page_id_t page_id) -> bool { return false; }
+auto BufferPoolManagerInstance::UnpinPgImp(page_id_t page_id, bool is_dirty) -> bool { 
+  // return false if the page could not be found in the page table
+  frame_id_t target_frame_id;
+  if(page_table_->Find(page_id, target_frame_id) == false) {
+    return false;
+  }
+  //auto cur_page = pages_[target_frame_id];
+  if(pages_[target_frame_id].pin_count_ <= 0) { return false; }
+  pages_[target_frame_id].pin_count_--;
+  if(pages_[target_frame_id].pin_count_-- == 0) {replacer_->SetEvictable(target_frame_id, true);}
+  pages_[target_frame_id].is_dirty_ = is_dirty;
+  return true;
+}
 
-void BufferPoolManagerInstance::FlushAllPgsImp() {}
+auto BufferPoolManagerInstance::FlushPgImp(page_id_t page_id) -> bool { 
+  // return false if the page could not be found in the page table
+  frame_id_t target_frame_id;
+  if(page_table_->Find(page_id, target_frame_id) == false) {
+    return false;
+  }
+  // 若 dirty 刷盘, 同上
+  //auto evict_page = pages_[target_frame_id];
+  if(pages_[target_frame_id].IsDirty() == true){
+    pages_[target_frame_id].is_dirty_ = false;
+    disk_manager_->WritePage(pages_[target_frame_id].GetPageId(), pages_[target_frame_id].GetData());
+  }
+  return true;
+}
 
-auto BufferPoolManagerInstance::DeletePgImp(page_id_t page_id) -> bool { return false; }
+void BufferPoolManagerInstance::FlushAllPgsImp() {
+  for(size_t i = 0; i < pool_size_; i++){
+    //auto cur_page = pages_[static_cast<int>(i)];
+    if(pages_[static_cast<int>(i)].GetPageId() != INVALID_PAGE_ID && pages_[static_cast<int>(i)].IsDirty() == true){
+      pages_[static_cast<int>(i)].is_dirty_ = false;
+      disk_manager_->WritePage(pages_[static_cast<int>(i)].GetPageId(), pages_[static_cast<int>(i)].GetData());
+    }
+  }
+}
+
+auto BufferPoolManagerInstance::DeletePgImp(page_id_t page_id) -> bool { 
+  // return true if the page could not be found in the page table
+  frame_id_t target_frame_id;
+  if(page_table_->Find(page_id, target_frame_id) == false) {
+    return true;
+  }
+  //auto cur_page = pages_[target_frame_id];
+  if(pages_[target_frame_id].GetPinCount() > 0) { return false; }
+  // delete
+  // 更新 hashtable
+  page_table_->Remove(page_id);
+  // 更新 replacer
+  replacer_->Remove(page_id);
+  // 更新 buffer pool
+  free_list_.emplace_back(target_frame_id);
+  pages_[target_frame_id].ResetMemory();
+  pages_[target_frame_id].is_dirty_ = false;
+  pages_[target_frame_id].page_id_ = INVALID_PAGE_ID;
+  pages_[target_frame_id].pin_count_ = 0;
+  // disk
+  DeallocatePage(page_id);
+  return true;
+}
 
 auto BufferPoolManagerInstance::AllocatePage() -> page_id_t { return next_page_id_++; }
 
